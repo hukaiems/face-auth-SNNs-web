@@ -2,29 +2,51 @@
 
 import { useEffect, useRef, useState } from "react";
 import Webcam from "react-webcam";
+import axios from "axios";
+
+const sendScreenshot = async (base64Image: string[]) => {
+  try{
+    const response = await axios.post("http://localhost:8000/compare", {
+      images: base64Image,
+    })
+    console.log("Response:", response.data);
+  } catch (err: any) {
+  console.log("Error details:", err.response?.data);
+}
+}
 
 export default function Home() {
   const [showCam, setShowCam] = useState(false);
   const webcamRef = useRef<Webcam>(null); // to interact with the webcam instance
-  const [screenshot, setScreenshot] = useState<string | null>(null);
+  const [screenshot, setScreenshot] = useState<string[]>([]);
+  const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
   useEffect(() => {
-    if (showCam) {
-      const timer = setTimeout(() => {
+    const captureImages = async () => {
+      if (showCam) {
         if (webcamRef.current) {
-          const imageSrc = webcamRef.current.getScreenshot();
-          setScreenshot(imageSrc || null);
-          console.log("Screen shot taken!");
+          const captured: string[] = [];
+          await delay(2000);
+          for (let i = 0; i < 5; i++) {
+            const img = webcamRef.current.getScreenshot();
+            if (img) {
+              captured.push(img);
+              console.log(`Captured photo ${i + 1}`);
+            }
+            await delay(500);
+          }
+          setScreenshot(captured);
+          await sendScreenshot(captured);
+          setShowCam(false);
         }
-      }, 3000);
-      return () => clearTimeout(timer);
-    }
+      }
+    };
+    captureImages();
   }, [showCam]);
 
-  useEffect(()=> {
-    if(screenshot){
+  useEffect(() => {
+    if (screenshot) {
       setShowCam(false);
-
     }
   }, [screenshot]);
 
@@ -34,7 +56,7 @@ export default function Home() {
       <h1 className="text-4xl font-bold bg-gradient-to-r from-sky-400 to-indigo-500 text-transparent bg-clip-text p-10 rounded-xl">
         Facial authentication website
       </h1>
-      {!showCam && !screenshot && (
+      {!showCam && screenshot.length === 0 && (
         <button
           className="border rounded-2xl p-3 hover:bg-sky-700"
           onClick={() => setShowCam(true)}
@@ -58,7 +80,7 @@ export default function Home() {
             className="bg-white w-24 text-black rounded-xl h-12 hover:bg-yellow-500"
             onClick={() => {
               setShowCam(false);
-              setScreenshot(null);
+              setScreenshot([]);
             }}
           >
             Cancle{" "}
@@ -67,13 +89,16 @@ export default function Home() {
       )}
 
       {/* picture screenshot */}
-      {screenshot && (
-        <div>
-        <img
-          src={screenshot}
-          alt="Screenshot"
-          className="rounded-xl max-w-xs"
-        ></img>
+      {screenshot.length > 0 && (
+        <div className="flex gap-3">
+          {screenshot.map((src, idx) => (
+            <img 
+              key={idx}
+              src={src}
+              alt={`Screenshot ${idx + 1}`}
+              className="rounded-x max-w-xs"
+            />
+          ))}
         </div>
       )}
     </div>
