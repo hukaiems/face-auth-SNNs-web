@@ -21,7 +21,6 @@ export default function Register() {
   const [serverResponse, setServerResponse] = useState<RegisterResponse | null>(
     null
   );
-  const [error, setError] = useState<string>("");
   const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
   const router = useRouter();
 
@@ -66,8 +65,7 @@ export default function Register() {
       );
       console.log("Backend response:", response.data);
       return response.data;
-    } catch (err: any) {
-      setError("Failed try again!");
+    } catch{
       setShowCam(false);
       return null;
     }
@@ -114,7 +112,7 @@ export default function Register() {
     };
 
     registerImages();
-  }, [showCam]);
+  }, [showCam, userName]);
 
   const goToHome = () => {
     router.push("/");
@@ -128,7 +126,8 @@ export default function Register() {
         <div className="flex flex-col justify-center items-center h-screen gap-4">
           {screenShot.length > 0 && !serverResponse && (
             <h1>
-              Registration failed, move your face closer to the camera next time, try again.
+              Registration failed, move your face closer to the camera next
+              time, try again.
             </h1>
           )}
           <h1 className="text-4xl">Enter your name below</h1>

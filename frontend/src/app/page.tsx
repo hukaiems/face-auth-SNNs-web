@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from 'next/navigation';
 import Webcam from "react-webcam";
 import axios from "axios";
+import Image from "next/image";
 
 export interface RecognizedResponse {
   recognized: boolean;
@@ -11,7 +12,6 @@ export interface RecognizedResponse {
   similarity: number;
   votes: number;
 }
-
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL!;
 if (!API_BASE) throw new Error("NEXT_PUBLIC_API_BASE_URL is not defined");
 
@@ -38,9 +38,9 @@ export default function Home() {
       console.log("Response:", response.data);
 
       return response.data;
-    } catch (err: any) {
-      console.log("Error details:", err.response?.data);
-      const detail = err.response?.data?.detail ?? "Unknown error";
+    } catch {
+      console.log("Error details: no face detected");
+      const detail =  "No face detected, move closer to the camera";
       setErrorMsg(detail);
       return null;
     }
@@ -134,14 +134,16 @@ export default function Home() {
       {/* picture screenshot  and authentication result*/}
       {screenshot.length > 0 && (
         <div className="flex gap-3">
-          <img
+        <Image
             src={screenshot[3]}
             alt="Screenshot 1"
             className="rounded-xl max-w-xs"
+            width={640}
+            height={640}
           />
           {result?.recognized === true && (
             <div>
-              <h1>Name: {result.user_id}</h1>
+              <h1>Xin chào: {result.user_id}</h1>
               <h1>Similarity score: {result?.similarity}</h1>
               <h1>Votes: {result.votes}</h1>
             </div>
@@ -149,7 +151,7 @@ export default function Home() {
 
           {result?.recognized === false && (
             <div>
-              <h1>Can't recognized user.</h1>
+              <h1>Can&apos;t recognized user.</h1>
               <h1>Similarity score: {result?.similarity}</h1>
             </div>
           )}
