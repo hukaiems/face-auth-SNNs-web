@@ -1,20 +1,20 @@
 import torch
 import yaml
 from PIL import Image
-import argparse
 from timm.models import create_model
 import numpy as np
 from facenet_pytorch import MTCNN
 import io
 from typing import List, Tuple, Optional
 import uvicorn
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import os
 import models.spikingresformer
 import sqlite3
+import base64
 
 def load_config(config_path):
     "Load YAML config file"
@@ -51,10 +51,17 @@ def get_embedding(
     
     "Detect face, preprocess, and compute the embedding"
     img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
     # Detect faces
-    aligned = detector(img)
-    if aligned is None:
-        raise ValueError("No face detected")
+    try:
+        aligned = detector(img)
+        if aligned is None:
+            raise HTTPException(status_code=400, detail="No face detected.")
+    except RuntimeError as e:
+        if "expected a non-empty list of Tensors" in str(e):
+            raise HTTPException(status_code=400, detail="Face is too small or not detectable.")
+        else:
+            raise e
     
     tensor = aligned.unsqueeze(0).to(device)
     # Infer
@@ -120,11 +127,11 @@ app.add_middleware(
 
 # Globals
 model = None
-preprocess_fn = None
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 detector = MTCNN(
     image_size = 112, 
-    margin=0, 
+    margin=0,
+    min_face_size=400, 
     post_process=False, 
     device=device
 )
@@ -153,15 +160,24 @@ class RecognizeResponse(BaseModel):
 
 @app.on_event("startup")
 def startup_event(): # are the positions matter ?
-    global model, preprocess_fn, detector, conn, cursor, db_embeddings, db_labels
+    global model, detector, conn, cursor, db_embeddings, db_labels
 
     # 1 load model, preprocess and face detector
     model = load_model("configs/inference.yaml", device)
 
     # warm up spiking
     from PIL import Image
-    dummy_img = Image.new("RGB", (112, 112), (128, 128, 128)) # last one create shade of grey
-    _ = detector(dummy_img)
+    try:
+        dummy_img = Image.new("RGB", (112, 112), (128, 128, 128)) # last one create shade of grey
+        _ = detector(dummy_img)
+    except:
+        pass
+
+    DB_DIR = "database"
+    DB_NAME = "faces.db"
+    DB_PATH = os.path.join(DB_DIR, DB_NAME)
+
+    os.makedirs(DB_DIR, exist_ok=True)
 
     # 2 open sqlite and create table
     conn = sqlite3.connect(DB_PATH, check_same_thread=False) #Fastapi might handles requests across threads
@@ -248,10 +264,10 @@ async def register_face(
     
 @app.post("/compare", response_model=RecognizeResponse)
 async def compare_face(
-    images: List[UploadFile] = File(..., description="Send 5 face images")
+    images: List[str] = Body(..., embed=True, description="Base64-encoded images")
 ):
     if len(images) < 5:
-        raise HTTPException(400, "Please send exactly 5 images")
+        raise HTTPException(status_code=400, detail="Please send exactly 5 images")
     
 
     #  1 run each image throguh get embed + comparison
@@ -259,9 +275,13 @@ async def compare_face(
     sims = [] #collect (user_id, sim) tuples for reporting
 
     for image in images:
-        img_bytes = await image.read()
         try:
+            # split off the "data:image/jpeg;base64" prefix
+            _, b64 = image.split(",", 1)
+            img_bytes = base64.b64decode(b64)
             emb = get_embedding(model, img_bytes, device)
+        except HTTPException:
+            raise
         except ValueError: 
             # no face in this one- count as a miss
             continue
