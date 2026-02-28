@@ -1,3 +1,5 @@
+# uvicorn backend:app --host 0.0.0.0 --port 8000 --reload
+
 import torch
 import yaml
 from PIL import Image
@@ -71,8 +73,9 @@ def get_embedding(
         if emb.dim() == 3: # check for temporal, yes then calculate mean over time
             emb = emb.mean(0, keepdim=True)
     emb = emb.squeeze(0).cpu().numpy() #Changes shape from [1, D] into [D]
+    # triple_ti model doesnt need l2
     # Normalize so their dot product becomes exactly the cosine of the angle between them.
-    emb = emb / np.linalg.norm(emb)
+    # emb = emb / np.linalg.norm(emb)
     return emb
 
 def compare_embedding (
