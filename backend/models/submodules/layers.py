@@ -16,14 +16,14 @@ class LIF(neuron.LIFNode):
     def __init__(self):
         super().__init__(tau=2., decay_input=True, v_threshold=1., v_reset=0.,
                          surrogate_function=surrogate.ATan(), detach_reset=True, step_mode='m',
-                         backend='cupy', store_v_seq=False)
+                         backend='torch', store_v_seq=False)
 
 
 class PLIF(neuron.ParametricLIFNode):
     def __init__(self):
         super().__init__(init_tau=2., decay_input=True, v_threshold=1., v_reset=0.,
                          surrogate_function=surrogate.ATan(), detach_reset=True, step_mode='m',
-                         backend='cupy', store_v_seq=False)
+                         backend='torch', store_v_seq=False)
 
 
 class BN(nn.Module):

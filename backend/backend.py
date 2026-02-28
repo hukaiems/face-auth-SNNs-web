@@ -14,20 +14,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import os
-import models.spikingresformer
 import sqlite3
 import base64
+import models.spikingresformer
+
 
 def load_config(config_path):
     "Load YAML config file"
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
-    
+
+
 def load_model(cfg_path: str, device: torch.device = torch.device('cpu')) -> torch.nn.Module:
     "Load the SNNs face recognition model and preprocessing pipeline"
     cfg = load_config(cfg_path)
     input_size = cfg.get('input_size', [3, 112, 112])
-    model_name = cfg.get('model', 'spikingresformer_ti')
+    model_name = cfg.get('model', 'spikingresformer_triplet_ti')
     checkpoint_path = cfg.get('checkpoint', './logs/checkpoint_best.pth')
     T = cfg.get('T', 4)
     embed_dim = cfg.get('embeded_dim', 512)
@@ -35,8 +37,8 @@ def load_model(cfg_path: str, device: torch.device = torch.device('cpu')) -> tor
     model = create_model(
         model_name,
         T,
-        num_classes = embed_dim,
-        img_size = input_size[-1]
+        num_classes=embed_dim,
+        img_size=input_size[-1]
     )
 
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
@@ -45,12 +47,12 @@ def load_model(cfg_path: str, device: torch.device = torch.device('cpu')) -> tor
 
     return model
 
+
 def get_embedding(
         model: torch.nn.Module,
         img_bytes: bytes,
         device: torch.device,
 ) -> np.array:
-    
     "Detect face, preprocess, and compute the embedding"
     img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
 
@@ -61,24 +63,26 @@ def get_embedding(
             raise HTTPException(status_code=400, detail="No face detected.")
     except RuntimeError as e:
         if "expected a non-empty list of Tensors" in str(e):
-            raise HTTPException(status_code=400, detail="Face is too small or not detectable.")
+            raise HTTPException(
+                status_code=400, detail="Face is too small or not detectable.")
         else:
             raise e
-    
+
     tensor = aligned.unsqueeze(0).to(device)
     # Infer
     with torch.no_grad():
         emb = model(tensor)
         # Handle temporal outputs
-        if emb.dim() == 3: # check for temporal, yes then calculate mean over time
+        if emb.dim() == 3:  # check for temporal, yes then calculate mean over time
             emb = emb.mean(0, keepdim=True)
-    emb = emb.squeeze(0).cpu().numpy() #Changes shape from [1, D] into [D]
+    emb = emb.squeeze(0).cpu().numpy()  # Changes shape from [1, D] into [D]
     # triple_ti model doesnt need l2
     # Normalize so their dot product becomes exactly the cosine of the angle between them.
     # emb = emb / np.linalg.norm(emb)
     return emb
 
-def compare_embedding (
+
+def compare_embedding(
         emb: np.array,
         db_embeddings: np.array,
         db_labels: np.array,
@@ -91,7 +95,7 @@ def compare_embedding (
     """
     if db_embeddings.size == 0:
         return None, 0.0
-    
+
     # Group every 3 embeddings together (frontal, left, right)
     num_users = len(db_labels)
     assert db_embeddings.shape[0] == num_users * 3
@@ -103,7 +107,7 @@ def compare_embedding (
 
     for i in range(num_users):
         user_id = db_labels[i]
-        pose_embs = db_embeddings[i*3 : (i+1)*3]
+        pose_embs = db_embeddings[i*3: (i+1)*3]
 
         sims = pose_embs.dot(input_emb)
         user_best_sim = float(np.max(sims))
@@ -113,16 +117,17 @@ def compare_embedding (
             best_user = user_id
 
     if best_sim >= threshold:
-        return best_user, best_sim 
+        return best_user, best_sim
     else:
         return None, best_sim
-    
+
 # -------------------------------Fast API App ----------------------------------------------------------------------
+
 
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    # CORS = Cross - Origin Resource Sharing 
+    # CORS = Cross - Origin Resource Sharing
     allow_origins=["http://localhost:3000"],
     allow_methods=["POST"],
     allow_headers=["*"],
@@ -132,21 +137,21 @@ app.add_middleware(
 model = None
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 detector = MTCNN(
-    image_size = 112, 
+    image_size=112,
     margin=0,
-    min_face_size=400, 
-    post_process=False, 
+    min_face_size=360,
+    post_process=False,
     device=device
 )
 db_embeddings = np.zeros((0, 512), dtype=np.float32)
-db_labels: List[str]= []
+db_labels: List[str] = []
 THRESHOLD = 0.75
 DB_PATH = "faces.db"
 conn: sqlite3.Connection = None
 cursor: sqlite3.Cursor = None
 # what are those ?
 
-#Pydantic response model
+# Pydantic response model
 default_response = {
     "recognized": False,
     "user_id": None,
@@ -155,64 +160,76 @@ default_response = {
 }
 
 # provide json data will be given back
+
+
 class RecognizeResponse(BaseModel):
     recognized: bool
     user_id: Optional[str]
     similarity: float
     votes: int
 
+
 @app.on_event("startup")
-def startup_event(): # are the positions matter ?
+def startup_event():  # are the positions matter ?
     global model, detector, conn, cursor, db_embeddings, db_labels
 
+    try:
+        DB_DIR = "/database"
+        DB_NAME = "faces.db"
+        DB_PATH = os.path.join(DB_DIR, DB_NAME)
+
+        os.makedirs(DB_DIR, exist_ok=True)
+
+        # 2 open sqlite and create table
+        # Fastapi might handles requests across threads
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        # because requests can come at the same time, in that moment they need to access db so we let check_same_thread False
+        cursor = conn.cursor()  # use this to execute command in SQL
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS faces (
+                user_id TEXT PRIMARY KEY,
+                frontal_emb BLOB NOT NULL,
+                left_emb BLOB NOT NULL,
+                right_emb BLOB NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+        conn.commit()  # like GIT, to save everything in db
+    except Exception as e:
+        print(f"Database error: {e}")
+        raise e
+    
     # 1 load model, preprocess and face detector
     model = load_model("configs/inference.yaml", device)
 
     # warm up spiking
     from PIL import Image
     try:
-        dummy_img = Image.new("RGB", (112, 112), (128, 128, 128)) # last one create shade of grey
+        # last one create shade of grey
+        dummy_img = Image.new("RGB", (112, 112), (128, 128, 128))
         _ = detector(dummy_img)
     except:
         pass
 
-    DB_DIR = "database"
-    DB_NAME = "faces.db"
-    DB_PATH = os.path.join(DB_DIR, DB_NAME)
-
-    os.makedirs(DB_DIR, exist_ok=True)
-
-    # 2 open sqlite and create table
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False) #Fastapi might handles requests across threads
-    # because requests can come at the same time, in that moment they need to access db so we let check_same_thread False
-    cursor = conn.cursor() # use this to execute command in SQL
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS faces (
-            user_id TEXT PRIMARY KEY,
-            frontal_emb BLOB NOT NULL,
-            left_emb BLOB NOT NULL,
-            right_emb BLOB NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-""")
-    conn.commit() # like GIT, to save everything in db
-
     # 3 Load existing faces into memory
-    cursor.execute("SELECT user_id, frontal_emb, left_emb, right_emb FROM faces")
-    rows = cursor.fetchall() #taje all data put into rows var
+    cursor.execute(
+        "SELECT user_id, frontal_emb, left_emb, right_emb FROM faces")
+    rows = cursor.fetchall()  # taje all data put into rows var
     db_labels = [row[0] for row in rows]
     # convert each BLOB back into numpy array
     db_embeddings = np.vstack([
-        np.frombuffer(emb, dtype=np.float32) # turn bytes back to numpy 
+        np.frombuffer(emb, dtype=np.float32)  # turn bytes back to numpy
         # loop through all the user in rows and get all the embedding
         for row in rows
         for emb in row[1:4]
     ]) if rows else np.zeros((0, 512), dtype=np.float32)
 
 # register a new face
+
+
 @app.post("/register")
 async def register_face(
-    user_id: str =Form(...), # (...) stands for required
+    user_id: str = Form(...),  # (...) stands for required
     frontal: UploadFile = File(...),
     left: UploadFile = File(...),
     right: UploadFile = File(...),
@@ -223,7 +240,7 @@ async def register_face(
             "left": left,
             "right": right
         }
-        #Step 1 Read and extracts embedding for 3 poses
+        # Step 1 Read and extracts embedding for 3 poses
         embeddings = {}
         for pose, file in files.items():
             img_bytes = await file.read()
@@ -232,19 +249,21 @@ async def register_face(
             emb = get_embedding(model, img_bytes, device)
             embeddings[pose] = emb.astype(np.float32).tobytes()
 
-        #insert into DB
+        # insert into DB
         cursor.execute(
             """
-            INSERT INTO faces (user_id, frontal_emb, left_emb, right_emb) 
-            VALUES (?, ?, ?, ?)            
+            INSERT INTO faces (user_id, frontal_emb, left_emb, right_emb)
+            VALUES (?, ?, ?, ?)
             """,
-            (user_id, embeddings["frontal"], embeddings["left"], embeddings["right"]),
+            (user_id, embeddings["frontal"],
+             embeddings["left"], embeddings["right"]),
         )
         conn.commit()
 
         global db_embeddings
 
-        cursor.execute("SELECT user_id, frontal_emb, left_emb, right_emb FROM faces")
+        cursor.execute(
+            "SELECT user_id, frontal_emb, left_emb, right_emb FROM faces")
         rows = cursor.fetchall()
         db_labels.clear()
         db_labels.extend([row[0] for row in rows])
@@ -263,36 +282,48 @@ async def register_face(
         )
     # any exception will run this code block
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
-    
+        raise HTTPException(
+            status_code=500, detail=f"Registration failed: {str(e)}")
+
+
 @app.post("/compare", response_model=RecognizeResponse)
 async def compare_face(
-    images: List[str] = Body(..., embed=True, description="Base64-encoded images")
+    images: List[str] = Body(..., embed=True,
+                             description="Base64-encoded images")
 ):
     if len(images) < 5:
-        raise HTTPException(status_code=400, detail="Please send exactly 5 images")
-    
+        raise HTTPException(
+            status_code=400, detail="Please send exactly 5 images")
 
     #  1 run each image throguh get embed + comparison
-    votes = {} #user_id -> count of passes
-    sims = [] #collect (user_id, sim) tuples for reporting
+    votes = {}  # user_id -> count of passes
+    sims = []  # collect (user_id, sim) tuples for reporting
 
     for image in images:
         try:
-            # split off the "data:image/jpeg;base64" prefix
-            _, b64 = image.split(",", 1)
+            # Safely handle strings with or without the prefix
+            if "," in image:
+                _, b64 = image.split(",", 1)
+            else:
+                b64 = image
+
             img_bytes = base64.b64decode(b64)
             emb = get_embedding(model, img_bytes, device)
+
         except HTTPException:
-            raise
-        except ValueError: 
-            # no face in this one- count as a miss
+            # get_embedding found no face. Skip this frame and try the next one.
             continue
-        user_id, similarity = compare_embedding(emb, db_embeddings, db_labels, THRESHOLD)
+        except Exception as e:
+            # Catch base64 decode errors and skip the frame.
+            print(f"Skipping bad image data: {e}")
+            continue
+
+        user_id, similarity = compare_embedding(
+            emb, db_embeddings, db_labels, THRESHOLD)
         sims.append((user_id, similarity))
         if user_id is not None:
-            votes[user_id] = votes.get(user_id, 0) + 1 # 0 are default params
-        
+            votes[user_id] = votes.get(user_id, 0) + 1  # 0 are default params
+
     # 2 decide winner
     best_user, best_votes = None, 0
     for user_id, count in votes.items():
@@ -300,7 +331,7 @@ async def compare_face(
             best_user, best_votes = user_id, count
 
     # 3 If someone got 3 mores => recognized
-    recognized = (best_votes >=3 )
+    recognized = (best_votes >= 3)
     best_sim = 0.0
     if recognized:
         best_sim = max(sim for (uid, sim) in sims if uid == best_user)
@@ -309,8 +340,9 @@ async def compare_face(
         recognized=recognized,
         user_id=best_user if recognized else None,
         similarity=best_sim,
-        votes = best_votes
+        votes=best_votes
     )
+
 
 @app.get("/healthz")
 def healthz():
