@@ -160,8 +160,6 @@ default_response = {
 }
 
 # provide json data will be given back
-
-
 class RecognizeResponse(BaseModel):
     recognized: bool
     user_id: Optional[str]
